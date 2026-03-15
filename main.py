@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-PVAPins - WhatsApp Mexico | Multi-App · Multi-Thread · Target OTP
-- Sisa nomor TIDAK di-reject saat target tercapai
-- Auto cancel (tanpa reject) jika 15 menit tidak dapat OTP
+PVAPins - WhatsApp Mexico
+Multi-App · Multi-Thread · Target OTP
 """
 
 import requests
@@ -12,21 +11,17 @@ import re
 import threading
 from datetime import datetime
 from rich.console import Console
-from rich.panel import Panel
 from rich.prompt import Prompt, Confirm, IntPrompt
-from rich.text import Text
-from rich.live import Live
-from rich.table import Table
-from rich.console import Group
-from rich import box
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
-BASE_URL    = "https://api.pvapins.com/user/api"
-COUNTRY     = "mexico"
-API_KEY     = "69b65a9dcf0d9598859"
-POLL_DELAY  = 5           # detik antar polling
-POLL_MAX    = 180         # 180 × 5s = 15 menit (auto cancel)
-ORDER_DELAY = 0.3         # detik jeda sebelum request get_number
+BASE_URL     = "https://api.pvapins.com/user/api"
+COUNTRY      = "mexico"
+API_KEY      = "69b65a9dcf0d9598859"
+POLL_DELAY   = 5
+POLL_MAX     = 180    # 180 × 5s = 15 menit
+ORDER_DELAY  = 0.3
+RETRY_DELAY  = 10
+RETRY_MAX    = 60
 
 WA_APPS = {
     "1": "Whatsapp1",
@@ -36,21 +31,26 @@ WA_APPS = {
     "5": "Whatsapp60",
 }
 
-APP_COLORS = {
-    "Whatsapp1":  "green",
-    "Whatsapp9":  "bright_green",
-    "Whatsapp24": "cyan",
-    "Whatsapp42": "blue",
-    "Whatsapp60": "magenta",
-}
-
-console = Console()
+console = Console(highlight=False)
 
 # ─── SHARED STATE ──────────────────────────────────────────────────────────────
-lock          = threading.Lock()
-done_event    = threading.Event()
-results       = []
-thread_status = {}
+lock        = threading.Lock()
+done_event  = threading.Event()
+results     = []
+log_lines   = []          # log global (thread-safe)
+MAX_LOG     = 200
+
+# ─── LOG ───────────────────────────────────────────────────────────────────────
+def now() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+def log(msg: str):
+    line = f"[dim]{now()}[/dim]  {msg}"
+    with lock:
+        log_lines.append(line)
+        if len(log_lines) > MAX_LOG:
+            log_lines.pop(0)
+    console.print(line)
 
 # ─── API ───────────────────────────────────────────────────────────────────────
 def api_get(endpoint: str, params: dict):
@@ -76,14 +76,18 @@ def get_number(key: str, app: str):
     data = api_get("get_number.php", {
         "customer": key, "app": app, "country": COUNTRY,
     })
+    if data is None:
+        return None, "timeout/koneksi"
     if isinstance(data, dict):
         num = str(data.get("data", ""))
         if data.get("code") == 100 or num.isdigit():
-            return num
-        return None
-    if isinstance(data, str) and data.isdigit():
-        return data
-    return None
+            return num, None
+        return None, (num[:40] if num else "error tidak diketahui")
+    if isinstance(data, str):
+        if data.isdigit():
+            return data, None
+        return None, data[:40]
+    return None, "respon tidak dikenal"
 
 def poll_sms(key: str, number: str, app: str):
     data = api_get("get_sms.php", {
@@ -107,42 +111,33 @@ def poll_sms(key: str, number: str, app: str):
 # ─── WORKER ────────────────────────────────────────────────────────────────────
 def worker(tid: int, key: str, app: str, target: int, delay_start: float = 0):
     time.sleep(delay_start)
-
-    def setstatus(number, status, step, elapsed=""):
-        with lock:
-            thread_status[tid] = {
-                "app": app, "number": number or "-",
-                "status": status, "step": step,
-                "elapsed": elapsed,
-                "ts": datetime.now().strftime("%H:%M:%S"),
-            }
+    tag = f"[cyan]T{tid:02d}[/cyan] [dim]{app}[/dim]"
+    fail_count = 0
 
     while not done_event.is_set():
-        setstatus(None, "[yellow]Ambil nomor...[/yellow]", 0)
         time.sleep(ORDER_DELAY)
-        number = get_number(key, app)
+        number, err = get_number(key, app)
+
         if not number:
-            setstatus(None, "[red]Gagal nomor[/red]", 0)
-            time.sleep(10)
+            fail_count += 1
+            wait = min(RETRY_DELAY * fail_count, RETRY_MAX)
+            log(f"{tag}  [red]gagal nomor[/red]  [dim]{err} — retry {wait}s[/dim]")
+            time.sleep(wait)
             continue
 
-        setstatus(number, "[cyan]Polling OTP[/cyan]", 0)
-        got_otp = False
+        fail_count = 0
+        log(f"{tag}  [green]+{number}[/green]  polling OTP...")
         start_ts = time.time()
 
         for i in range(1, POLL_MAX + 1):
-            # ── Target tercapai: berhenti tanpa reject ──
             if done_event.is_set():
                 elapsed = int(time.time() - start_ts)
-                setstatus(number, "[dim]Stop (target done)[/dim]", i,
-                          f"{elapsed}s")
+                log(f"{tag}  [dim]+{number} stop (target done) {elapsed}s[/dim]")
                 return
 
             time.sleep(POLL_DELAY)
             elapsed = int(time.time() - start_ts)
             mins, secs = divmod(elapsed, 60)
-            elapsed_str = f"{mins:02d}:{secs:02d}"
-
             otp, full_msg = poll_sms(key, number, app)
 
             if otp:
@@ -153,234 +148,84 @@ def worker(tid: int, key: str, app: str, target: int, delay_start: float = 0):
                             "otp": otp, "number": number,
                             "msg": full_msg, "tid": tid,
                             "app": app,
-                            "ts": datetime.now().strftime("%H:%M:%S"),
+                            "ts": now(),
                         })
-                        if len(results) >= target:
+                        collected = len(results)
+                        if collected >= target:
                             done_event.set()
 
-                setstatus(number, f"[bold green]OTP: {otp}[/bold green]",
-                          i, elapsed_str)
-                got_otp = True
-                break
+                log(
+                    f"{tag}  [green]+{number}[/green]  "
+                    f"[bold green]OTP {otp}[/bold green]  "
+                    f"[dim]{mins:02d}:{secs:02d}  ({collected}/{target})[/dim]"
+                )
+                return
 
-            # ── Timeout 15 menit: cancel tanpa reject, coba nomor baru ──
             if i >= POLL_MAX:
-                setstatus(number, "[red]15 menit! Auto cancel[/red]",
-                          i, elapsed_str)
-                # Tidak panggil reject_number — biarkan nomor expired sendiri
-                time.sleep(2)
+                log(f"{tag}  [yellow]+{number}[/yellow]  [dim]15 mnt timeout — cancel[/dim]")
                 break
 
-            setstatus(number, f"[cyan]Poll {i}/{POLL_MAX}[/cyan]",
-                      i, elapsed_str)
+            if i % 6 == 0:   # log setiap 30 detik saja agar tidak spam
+                log(f"{tag}  [dim]+{number} poll {i}/{POLL_MAX}  {mins:02d}:{secs:02d}[/dim]")
 
-        if not got_otp and not done_event.is_set():
-            # Lanjut coba nomor baru
-            time.sleep(2)
-
-# ─── LIVE TABLE ────────────────────────────────────────────────────────────────
-def make_table(balance: str, selected_apps: list, target: int) -> Panel:
-    with lock:
-        snap_st  = dict(thread_status)
-        snap_res = list(results)
-        collected = len(snap_res)
-
-    # ── Thread table ──
-    t = Table(
-        box=box.SIMPLE_HEAD, show_header=True,
-        header_style="bold cyan", expand=True, padding=(0, 1),
-    )
-    t.add_column("TID",     width=4,  justify="center")
-    t.add_column("App",     width=12)
-    t.add_column("Nomor",   width=16)
-    t.add_column("Status",  min_width=20)
-    t.add_column("Elapsed", width=8,  justify="center")
-    t.add_column("Poll",    width=14, justify="center")
-    t.add_column("Waktu",   width=10, justify="right")
-
-    for tid in sorted(snap_st):
-        s   = snap_st[tid]
-        app = s.get("app", "-")
-        col = APP_COLORS.get(app, "white")
-        step = s["step"]
-        filled = int(step / POLL_MAX * 12) if POLL_MAX else 0
-        bar = f"[{col}]" + "#" * filled + f"[/{col}][dim]" + "-" * (12 - filled) + "[/dim]"
-        t.add_row(
-            str(tid),
-            f"[{col}]{app}[/{col}]",
-            s["number"],
-            s["status"],
-            s.get("elapsed", "-"),
-            bar,
-            s["ts"],
-        )
-
-    # ── Hasil OTP table ──
-    r = Table(
-        box=box.SIMPLE_HEAD, show_header=True,
-        header_style="bold green", expand=True, padding=(0, 1),
-    )
-    r.add_column("#",      width=4,  justify="center")
-    r.add_column("App",    width=12)
-    r.add_column("Nomor",  width=16)
-    r.add_column("OTP",    width=10, style="bold bright_green")
-    r.add_column("SMS",    min_width=30)
-    r.add_column("Waktu",  width=10, justify="right")
-
-    for idx, res in enumerate(snap_res, 1):
-        col = APP_COLORS.get(res["app"], "green")
-        r.add_row(
-            str(idx),
-            f"[{col}]{res['app']}[/{col}]",
-            f"+{res['number']}",
-            res["otp"],
-            (res["msg"] or "")[:50],
-            res["ts"],
-        )
-    for i in range(collected + 1, target + 1):
-        r.add_row(
-            str(i), "[dim]-[/dim]", "[dim]-[/dim]",
-            "[dim]...[/dim]", "[dim]Menunggu...[/dim]", "[dim]-[/dim]",
-        )
-
-    # ── Progress bar ──
-    bar_len  = 20
-    done_len = int(collected / target * bar_len) if target else 0
-    prog = (
-        "[green]" + "#" * done_len + "[/green]"
-        + "[dim]" + "-" * (bar_len - done_len) + "[/dim]"
-    )
-
-    apps_label = "  ".join(
-        f"[{APP_COLORS.get(a,'white')}]{a}[/{APP_COLORS.get(a,'white')}]"
-        for a in selected_apps
-    )
-
-    header = (
-        f"[bold cyan]PVAPins WhatsApp Mexico[/bold cyan]  "
-        f"[dim]|[/dim]  [green]${balance}[/green]  "
-        f"[dim]|[/dim]  {apps_label}  "
-        f"[dim]|[/dim]  [bold]{collected}[/bold][dim]/{target}[/dim]  {prog}  "
-        f"[dim]| timeout: 15 mnt | no-reject[/dim]"
-    )
-
-    body = Group(
-        Panel(t, title="[cyan]Thread Status[/cyan]",
-              border_style="dim cyan", padding=(0, 1)),
-        Panel(r, title=f"[green]Hasil OTP  ({collected}/{target})[/green]",
-              border_style="green", padding=(0, 1)),
-    )
-    return Panel(body, title=header, border_style="cyan", padding=(0, 1))
+        time.sleep(2)
 
 # ─── PICK APPS ─────────────────────────────────────────────────────────────────
 def pick_apps() -> list:
     console.print()
-    console.print("  [bold cyan]Pilih App WhatsApp:[/bold cyan]")
     for k, v in WA_APPS.items():
-        col = APP_COLORS.get(v, "white")
-        console.print(f"    [{col}][{k}][/{col}] {v}")
-    console.print("    [dim][6][/dim] Semua (1 + 9 + 24 + 42 + 60)")
+        console.print(f"  [cyan]{k}[/cyan]  {v}")
+    console.print(f"  [cyan]6[/cyan]  Semua")
     console.print()
 
-    raw = Prompt.ask(
-        "  [cyan]Pilih[/cyan] (contoh: 5  atau  1,3,5  atau  6)",
-        default="5",
-    ).strip()
-
+    raw = Prompt.ask("  pilih app", default="5").strip()
     if raw == "6":
         return list(WA_APPS.values())
-
     chosen = []
-    for part in re.split(r"[,\s]+", raw):
-        if part in WA_APPS:
-            app = WA_APPS[part]
-            if app not in chosen:
-                chosen.append(app)
-    return chosen if chosen else ["Whatsapp60"]
+    for p in re.split(r"[,\s]+", raw):
+        if p in WA_APPS and WA_APPS[p] not in chosen:
+            chosen.append(WA_APPS[p])
+    return chosen or ["Whatsapp60"]
 
 # ─── MAIN ──────────────────────────────────────────────────────────────────────
 def main():
     console.clear()
-    console.print(Panel(
-        Text(
-            "PVAPins  -  WhatsApp Mexico  |  Multi-App · Multi-Thread · Target OTP",
-            justify="center", style="bold cyan",
-        ),
-        subtitle="[dim]No-Reject  ·  Auto-Cancel 15 menit[/dim]",
-        border_style="cyan",
-        padding=(0, 2),
-    ))
+    console.rule("[bold cyan]PVAPins  WhatsApp Mexico[/bold cyan]")
     console.print()
 
-    key = Prompt.ask("  [cyan]API Key[/cyan]", default=API_KEY).strip()
+    key = Prompt.ask("  api key", default=API_KEY).strip()
 
-    console.print("\n[dim]  Cek saldo...[/dim]")
-    balance = check_balance(key)
-    if balance is None:
-        console.print("[red]  x API key tidak valid.[/red]")
+    console.print()
+    bal = check_balance(key)
+    if bal is None:
+        console.print("  [red]api key tidak valid[/red]")
         sys.exit(1)
-    console.print(f"  Balance  :  [bold green]${balance}[/bold green]")
+    console.print(f"  balance  [green]{bal}[/green]")
 
-    selected_apps = pick_apps()
-    console.print(
-        "  App      :  " +
-        "  ".join(
-            f"[{APP_COLORS.get(a,'white')}]{a}[/{APP_COLORS.get(a,'white')}]"
-            for a in selected_apps
-        )
-    )
+    selected = pick_apps()
+    console.print(f"  app      {', '.join(selected)}")
 
-    target = IntPrompt.ask(
-        "\n  [cyan]Jumlah OTP yang ingin dikumpulkan[/cyan]",
-        default=1,
-    )
+    target = IntPrompt.ask("\n  jumlah otp", default=1)
     target = max(1, target)
-    console.print(f"  Target   :  [bold]{target} OTP[/bold]")
 
-    n_per_app = IntPrompt.ask(
-        f"  [cyan]Thread per app[/cyan] (×{len(selected_apps)} app)",
-        default=2,
-    )
-    n_per_app     = max(1, min(n_per_app, 5))
-    total_threads = n_per_app * len(selected_apps)
-    console.print(
-        f"  Thread   :  [bold]{total_threads}[/bold]  "
-        f"[dim]({n_per_app} × {len(selected_apps)} app)[/dim]"
-    )
-    console.print(
-        "  Timeout  :  [bold]15 menit[/bold] per nomor  "
-        "[dim](auto cancel, tanpa reject)[/dim]"
-    )
-    console.print(
-        f"  Order delay :  [bold]{ORDER_DELAY}s[/bold]  "
-        "[dim](jeda sebelum request nomor baru)[/dim]"
-    )
+    n_per = IntPrompt.ask(f"  thread per app  (×{len(selected)})", default=2)
+    n_per = max(1, min(n_per, 5))
+    total = n_per * len(selected)
 
-    console.print(f"\n  [dim]Memulai {total_threads} thread...[/dim]\n")
-    time.sleep(0.5)
+    console.print(f"  target   {target} otp")
+    console.print(f"  thread   {total}  ({n_per} × {len(selected)} app)")
+    console.print(f"  timeout  15 menit  (no reject)")
+    console.print()
+    console.rule()
+    console.print()
 
-    # Reset state
     done_event.clear()
     results.clear()
-    thread_status.clear()
 
-    # Init status
-    tid = 1
-    for app in selected_apps:
-        for _ in range(n_per_app):
-            thread_status[tid] = {
-                "app": app, "number": "-",
-                "status": "[dim]Init[/dim]", "step": 0,
-                "elapsed": "-",
-                "ts": datetime.now().strftime("%H:%M:%S"),
-            }
-            tid += 1
-
-    # Jalankan thread
     threads = []
     tid = 1
-    for app in selected_apps:
-        for _ in range(n_per_app):
+    for app in selected:
+        for _ in range(n_per):
             t = threading.Thread(
                 target=worker,
                 args=(tid, key, app, target, (tid - 1) * 1.0),
@@ -390,50 +235,34 @@ def main():
             t.start()
             tid += 1
 
-    # Live dashboard
-    with Live(
-        make_table(balance, selected_apps, target),
-        refresh_per_second=2,
-        console=console,
-    ) as live:
-        while not done_event.is_set():
-            live.update(make_table(balance, selected_apps, target))
-            time.sleep(0.5)
-        time.sleep(1.5)
-        live.update(make_table(balance, selected_apps, target))
-
-    # Summary
-    console.print()
-    lines = []
-    for idx, res in enumerate(results, 1):
-        col = APP_COLORS.get(res["app"], "green")
-        lines.append(
-            f"  [{col}][{idx:>2}][/{col}]"
-            f"  OTP [bold bright_green]{res['otp']}[/bold bright_green]"
-            f"  +{res['number']}"
-            f"  [{col}]{res['app']}[/{col}]"
-            f"  [dim]{res['ts']}[/dim]"
-        )
-    console.print(Panel(
-        "\n".join(lines),
-        title=f"[bold green]Selesai!  {len(results)}/{target} OTP Terkumpul[/bold green]",
-        subtitle="[dim]Nomor tidak di-reject — tetap aktif di akun PVAPins[/dim]",
-        border_style="green",
-        padding=(0, 2),
-    ))
+    # Tunggu sampai selesai
+    done_event.wait()
+    time.sleep(1.5)
 
     for t in threads:
         t.join(timeout=5)
 
+    # Summary
     console.print()
-    if Confirm.ask("  Order lagi?", default=False):
+    console.rule("[bold green]selesai[/bold green]")
+    for idx, res in enumerate(results, 1):
+        console.print(
+            f"  [dim]{idx:>2}[/dim]  "
+            f"[bold green]{res['otp']}[/bold green]  "
+            f"+{res['number']}  "
+            f"[dim]{res['app']}  {res['ts']}[/dim]"
+        )
+    console.rule()
+    console.print()
+
+    if Confirm.ask("  order lagi?", default=False):
         main()
     else:
-        console.print("\n  [dim]Selesai.[/dim]\n")
+        console.print("  [dim]selesai.[/dim]\n")
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        console.print("\n\n  [dim]Dibatalkan.[/dim]\n")
+        console.print("\n  [dim]dibatalkan.[/dim]\n")
         sys.exit(0)
