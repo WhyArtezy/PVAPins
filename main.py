@@ -145,17 +145,26 @@ def get_number(key: str, app: str):
     })
     if data is None:
         return None, ("timeout/koneksi", None)
+
+    # Ekstrak field "data" dari response
     if isinstance(data, dict):
-        num = str(data.get("data", ""))
-        if data.get("code") == 100 or num.isdigit():
-            return num, None
-        err = num if num else "unknown error"
+        raw_num = str(data.get("data", ""))
+        code    = str(data.get("code", ""))
+        # Sukses: code 100 atau data berisi angka
+        num_clean = re.sub(r'[^\d]', '', raw_num)   # hapus +, spasi, dll
+        if code == "100" or (num_clean and len(num_clean) >= 8):
+            log("INFO", f"get_number raw={raw_num} code={code}")
+            return num_clean, None
+        err = raw_num if raw_num else "unknown error"
     elif isinstance(data, str):
-        if data.isdigit():
-            return data, None
+        num_clean = re.sub(r'[^\d]', '', data)
+        if num_clean and len(num_clean) >= 8:
+            return num_clean, None
         err = data
     else:
         return None, ("unknown response", None)
+
+    log("WARNING", f"get_number gagal raw={data}")
     m = re.search(r'after\s+(\d+)\s*s', err, re.IGNORECASE)
     return None, (err, int(m.group(1)) if m else None)
 
@@ -166,7 +175,9 @@ def poll_sms(key: str, number: str, app: str):
     raw = None
     if isinstance(data, dict):
         raw = str(data.get("data", ""))
-        if any(x in raw.lower() for x in ["not", "expired", "error"]):
+        # Cek pesan error spesifik — jangan pakai "not" saja karena terlalu luas
+        err_phrases = ["not found", "not received", "expired", "error 102", "customer not"]
+        if any(x in raw.lower() for x in err_phrases):
             return None, None
     elif isinstance(data, list) and data:
         raw = data[0].get("message", "")
