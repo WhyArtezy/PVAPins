@@ -1,0 +1,28 @@
+# ─── PVAPins WhatsApp Mexico - Konfigurasi ────────────────────────────────────
+# Hapus tanda # untuk mengaktifkan baris
+
+# API
+API_KEY        = 69b65a9dcf0d9598859
+COUNTRY        = mexico
+
+# Polling
+POLL_DELAY     = 5       # detik antar cek SMS
+POLL_MAX       = 180     # 180 × 5s = 15 menit timeout
+
+# Order
+ORDER_DELAY    = 0.3     # detik jeda sebelum order nomor
+
+# Retry saat gagal nomor
+RETRY_DELAY    = 10      # detik tunggu pertama
+RETRY_MAX      = 60      # detik tunggu maksimum
+
+# Rate Limit (Standard plan PVAPins)
+MAX_REQ_PER_MIN  = 60    # maks request get_number per menit
+MAX_NEW_PER_MIN  = 3     # maks nomor BARU berhasil per menit
+
+# Dashboard
+MAX_LOG        = 12      # jumlah baris log di dashboard
+
+# Telegram Notifikasi
+TG_TOKEN       = 123456789:ABCDefghIJKlmnoPQRstuvWXyz  # ganti dengan bot token kamu
+TG_CHAT_ID     = 123456789                              # ganti dengan chat id kamu
