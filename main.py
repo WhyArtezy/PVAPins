@@ -41,7 +41,7 @@ def load_config(path: str = "config.txt") -> dict:
 _cfg = load_config()
 
 API_KEY         = _cfg.get("API_KEY", "")
-COUNTRY         = _cfg.get("COUNTRY", "mexico")
+COUNTRY         = _cfg.get("COUNTRY", "Mexico")
 POLL_DELAY      = int(_cfg.get("POLL_DELAY", 5))
 POLL_MAX        = int(_cfg.get("POLL_MAX", 180))
 ORDER_DELAY     = float(_cfg.get("ORDER_DELAY", 0.3))
@@ -56,11 +56,15 @@ TG_CHAT_ID      = _cfg.get("TG_CHAT_ID", "")
 BASE_URL = "https://api.pvapins.com/user/api"
 
 WA_APPS = {
-    "1": "Whatsapp1",
-    "2": "Whatsapp9",
-    "3": "Whatsapp24",
-    "4": "Whatsapp42",
-    "5": "Whatsapp60",
+    "1":  "Whatsapp1",
+    "2":  "Whatsapp9",
+    "3":  "Whatsapp24",
+    "4":  "Whatsapp33",
+    "5":  "Whatsapp42",
+    "6":  "Whatsapp56",
+    "7":  "Whatsapp57",
+    "8":  "Whatsapp58",
+    "9":  "Whatsapp60",
 }
 
 console = Console(highlight=False)
@@ -125,10 +129,19 @@ def api_get(endpoint: str, params: dict):
         r = requests.get(f"{BASE_URL}/{endpoint}", params=params, timeout=15)
         r.raise_for_status()
         try:
-            return r.json()
+            data = r.json()
+            # Debug: log raw response get_number
+            if "get_number" in endpoint:
+                log("INFO", f"RAW get_number: {str(data)[:120]}")
+            return data
         except Exception:
-            return r.text.strip()
-    except requests.exceptions.RequestException:
+            text = r.text.strip()
+            if "get_number" in endpoint:
+                log("INFO", f"RAW get_number text: {text[:120]}")
+            return text
+    except requests.exceptions.RequestException as e:
+        if "get_number" in endpoint:
+            log("WARNING", f"get_number exception: {str(e)[:80]}")
         return None
 
 def check_balance(key: str):
@@ -442,10 +455,10 @@ def pick_apps() -> list:
     console.print()
     for k, v in WA_APPS.items():
         console.print(f"  [cyan]{k}[/cyan]  {v}")
-    console.print("  [cyan]6[/cyan]  Semua")
+    console.print("  [cyan]0[/cyan]  Semua")
     console.print()
-    raw = Prompt.ask("  pilih app", default="5").strip()
-    if raw == "6":
+    raw = Prompt.ask("  pilih app", default="9").strip()
+    if raw == "0":
         return list(WA_APPS.values())
     chosen = []
     for p in re.split(r"[,\s]+", raw):
