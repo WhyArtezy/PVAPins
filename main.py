@@ -364,26 +364,41 @@ def make_dashboard(balance: str, target: int, selected_apps: list, total_threads
     nt.add_column("Masuk",  width=10, justify="center")
     nt.add_column("Tunggu", width=8,  justify="center")
 
-    shown = set()
-    for res in snap_results:
-        shown.add(res["tid"])
-        col = "dim"
-        nt.add_row(str(res["tid"]), f"[green]+{res['number']}[/green]",
-                   f"[dim]{res['app']}[/dim]", f"[bold green]{res['otp']}[/bold green]",
-                   "[bold green]OTP OK[/bold green]", res["ts"], "-")
+    row_num = 1
 
+    # Hasil OTP
+    for res in snap_results:
+        nt.add_row(
+            str(row_num),
+            f"[green]+{res['number']}[/green]",
+            f"[dim]{res['app']}[/dim]",
+            f"[bold green]{res['otp']}[/bold green]",
+            "[bold green]RECV[/bold green]",
+            res["ts"], "-",
+        )
+        row_num += 1
+
+    # Thread yang sedang punya nomor aktif (bukan OTP OK, bukan "-")
+    otp_ok_nums = {res["number"] for res in snap_results}
     for tid in sorted(snap_active):
-        if tid in shown: continue
-        s   = snap_active[tid]
+        s = snap_active[tid]
+        if s["number"] == "-" or s["number"] in otp_ok_nums:
+            continue
         col = STATUS_STYLE.get(s["status"], "white")
         nt.add_row(
-            str(tid),
-            f"[cyan]+{s['number']}[/cyan]" if s["number"] != "-" else "[dim]-[/dim]",
+            str(row_num),
+            f"[cyan]+{s['number']}[/cyan]",
             f"[dim]{s['app']}[/dim]",
             f"[dim]{s['otp']}[/dim]",
             f"[{col}]{s['status']}[/{col}]",
             s["masuk"], s["tunggu"],
         )
+        row_num += 1
+
+    # Jika tidak ada nomor sama sekali, tampilkan satu baris placeholder
+    if row_num == 1:
+        nt.add_row("-", "[dim]menunggu nomor...[/dim]", "-", "-", "-", "-", "-")
+
     num_panel = Panel(nt, title="[bold cyan]NOMOR AKTIF[/bold cyan]",
                       border_style="cyan", padding=(0, 1))
 
