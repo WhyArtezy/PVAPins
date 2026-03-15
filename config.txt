@@ -3,7 +3,7 @@
 
 # API
 API_KEY        = 69b65a9dcf0d9598859
-COUNTRY        = mexico
+COUNTRY        = Mexico
 
 # Polling
 POLL_DELAY     = 5       # detik antar cek SMS
@@ -21,7 +21,7 @@ MAX_REQ_PER_MIN  = 60    # maks request get_number per menit
 MAX_NEW_PER_MIN  = 3     # maks nomor BARU berhasil per menit
 
 # Dashboard
-MAX_LOG        = 12      # jumlah baris log di dashboard
+MAX_LOG        = 8      # jumlah baris log di dashboard
 
 # Telegram Notifikasi
 TG_TOKEN       = 123456789:ABCDefghIJKlmnoPQRstuvWXyz  # ganti dengan bot token kamu
